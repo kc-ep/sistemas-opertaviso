@@ -1,197 +1,273 @@
+import 'dart:isolate';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
-void main() {
-  runApp(const ElevatorApp());
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const ElevadorApp());
 }
 
-class ElevatorApp extends StatelessWidget {
-  const ElevatorApp({super.key});
+class ElevadorApp extends StatelessWidget {
+  const ElevadorApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: "Elevadores",
-      home: ElevatorMenu(),
+      title: 'Elevadores con Threads',
+      home: ElevadorScreen(),
+      debugShowCheckedModeBanner: false,
     );
   }
 }
 
-class ElevatorMenu extends StatefulWidget {
+class ElevadorScreen extends StatefulWidget {
   @override
-  State<ElevatorMenu> createState() => _ElevatorMenuState();
+  State<ElevadorScreen> createState() => _ElevadorScreenState();
 }
 
-class _ElevatorMenuState extends State<ElevatorMenu> {
-  int elevator1 = 2;
-  int elevator2 = 5;
+class _ElevadorScreenState extends State<ElevadorScreen> {
+  int elev1 = 2;
+  int elev2 = 5;
   int userFloor = 0;
 
   String log = "";
 
-  void addLog(String text) {
-    setState(() {
-      log += "$text\n";
+  void logMsg(String msg) {
+    setState(() => log += "$msg\n");
+  }
+
+  // =======================================================
+  // =============     WORKERS / THREADS     ===============
+  // =======================================================
+
+  /// Thread para elevador 1
+  static void elevador1Thread(Map data) async {
+    int dondeVa = data["target"];
+    int pos = data["pos"];
+    int distOtro = data["distOther"];
+    SendPort port = data["port"];
+
+    int dist1 = (pos - dondeVa).abs();
+
+    if (dist1 > distOtro) {
+      port.send({"tipo": 0, "msg": "Elevador 2 está más cerca", "pos": pos});
+      return;
+    }
+    
+    while (pos != dondeVa) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      pos += (pos > dondeVa) ? -1 : 1;
+      port.send({"tipo": 1, "msg": "Elevador 1 en piso $pos", "pos": pos});
+    }
+
+    port.send({"tipo": 2, "msg": "Elevador 1 llegó al piso $dondeVa", "pos": pos});
+  }
+
+  /// Thread para elevador 2
+  static void elevador2Thread(Map data) async {
+    int dondeVa = data["target"];
+    int pos = data["pos"];
+    int distOtro = data["distOther"];
+    SendPort port = data["port"];
+
+    int dist2 = (pos - dondeVa).abs();
+
+    if (dist2 > distOtro) {
+      port.send({"tipo": 0, "msg": "Elevador 1 está más cerca", "pos": pos});
+      return;
+    }
+
+    while (pos != dondeVa) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      pos += (pos > dondeVa) ? -1 : 1;
+      port.send({"tipo": 1, "msg": "Elevador 2 en piso $pos", "pos": pos});
+    }
+
+    port.send({"tipo": 2, "msg": "Elevador 2 llegó al piso $dondeVa", "pos": pos});
+  }
+
+  // =======================================================
+  // =============  FUNCIÓN PRINCIPAL (FASE 2)   ===========
+  // =======================================================
+
+  Future<void> llamarElevadores() async {
+    logMsg("Llamando elevadores al piso $userFloor...");
+
+    int dist1 = (elev1 - userFloor).abs();
+    int dist2 = (elev2 - userFloor).abs();
+
+    ReceivePort r1 = ReceivePort();
+    ReceivePort r2 = ReceivePort();
+
+    await Isolate.spawn(elevador1Thread, {
+      "target": userFloor,
+      "pos": elev1,
+      "distOther": dist2,
+      "port": r1.sendPort,
     });
+
+    await Isolate.spawn(elevador2Thread, {
+      "target": userFloor,
+      "pos": elev2,
+      "distOther": dist1,
+      "port": r2.sendPort,
+    });
+
+    r1.listen((data) {
+      logMsg(data["msg"]);
+      if (data["tipo"] != 0) {
+        setState(() => elev1 = data["pos"]);
+      }
+    });
+
+    r2.listen((data) {
+      logMsg(data["msg"]);
+      if (data["tipo"] != 0) {
+        setState(() => elev2 = data["pos"]);
+      }
+    });
+
+    await Future.delayed(const Duration(seconds: 4));
+    pedirDestino();
   }
 
-  // Simula tiempo como this_thread::sleep_for
-  Future<void> wait(int ms) async {
-    await Future.delayed(Duration(milliseconds: ms));
-  }
+  // =======================================================
+  // ============= VALIDACIÓN DE RANGO Y DESTINO ===========
+  // =======================================================
 
-  // ====== PAPU (Elevador 1) ======
-  Future<void> papu(int target) async {
-    int dist1 = (elevator1 - target).abs();
-    int dist2 = (elevator2 - target).abs();
+  Future<void> pedirDestino() async {
+    int destino = await pedirNumero("¿A qué piso va?");
+    int rango = await pedirRango();
 
-    // Si elevador 2 es más cercano → no usar este elevador
-    if (dist1 > dist2) {
-      addLog("Elevador 2 viene mejor");
+    if (destino > 6) {
+      logMsg("Ese nivel no existe");
       return;
     }
 
-    addLog("Elevador 1 llegando...");
-
-    while (elevator1 != target) {
-      addLog("Elevador 1 en piso $elevator1");
-
-      if (elevator1 > target) {
-        elevator1--;
-      } else {
-        elevator1++;
-      }
-
-      setState(() {});
-      await wait(500);
-    }
-
-    addLog("Elevador 1 llegó al piso $target");
-    await pedirDestino(1);
-  }
-
-  // ====== PAPU2 (Elevador 2) ======
-  Future<void> papu2(int target) async {
-    int dist2 = (elevator2 - target).abs();
-    int dist1 = (elevator1 - target).abs();
-
-    if (dist2 > dist1) {
-      addLog("Elevador 1 viene mejor");
+    if (rango == 1 && destino > 2) {
+      logMsg("No tiene acceso a ese nivel");
       return;
     }
 
-    addLog("Elevador 2 llegando...");
-
-    while (elevator2 != target) {
-      addLog("Elevador 2 en piso $elevator2");
-
-      if (elevator2 > target) {
-        elevator2--;
-      } else {
-        elevator2++;
-      }
-
-      setState(() {});
-      await wait(500);
+    if (rango == 2 && destino > 4) {
+      logMsg("No tiene acceso a ese nivel");
+      return;
     }
 
-    addLog("Elevador 2 llegó al piso $target");
-    await pedirDestino(2);
+    logMsg("Vamos camino al piso $destino");
   }
 
-  // ====== Pedir destino con rango ======
-  Future<void> pedirDestino(int elev) async {
-    int newFloor = await showDialog(
+  // =======================================================
+  // =============        UI AUXILIAR          =============
+  // =======================================================
+
+  Future<int> pedirNumero(String title) async {
+    int value = 0;
+
+    return await showDialog(
       context: context,
       builder: (context) {
-        int temp = 0;
         return AlertDialog(
-          title: const Text("¿A qué piso quiere ir?"),
+          title: Text(title),
           content: TextField(
             keyboardType: TextInputType.number,
-            onChanged: (v) => temp = int.tryParse(v) ?? 0,
+            onChanged: (v) => value = int.tryParse(v) ?? 0,
           ),
           actions: [
             TextButton(
-                onPressed: () => Navigator.pop(context, temp),
-                child: const Text("OK"))
+              onPressed: () => Navigator.pop(context, value),
+              child: const Text("OK"),
+            ),
           ],
         );
       },
     );
+  }
 
-    int rango = await showDialog(
+  Future<int> pedirRango() async {
+    int r = 1;
+
+    final result = await showDialog<int>(
       context: context,
       builder: (context) {
-        int r = 1;
-        return AlertDialog(
-          title: const Text("¿Cuál es su rango?"),
-          content: DropdownButton<int>(
-            value: 1,
-            items: const [
-              DropdownMenuItem(value: 1, child: Text("1 Empleado")),
-              DropdownMenuItem(value: 2, child: Text("2 Super empleado")),
-              DropdownMenuItem(value: 3, child: Text("3 Mega empleado")),
-            ],
-            onChanged: (v) => r = v ?? 1,
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, r), child: const Text("OK")),
-          ],
+        return StatefulBuilder(
+          builder: (context, setState) {
+            return AlertDialog(
+              title: const Text("¿Cuál es su rango?"),
+              content: DropdownButton<int>(
+                value: r,
+                items: const [
+                  DropdownMenuItem(value: 1, child: Text("1 Empleado")),
+                  DropdownMenuItem(value: 2, child: Text("2 Super empleado")),
+                  DropdownMenuItem(value: 3, child: Text("3 Mega empleado")),
+                ],
+                onChanged: (v) => setState(() => r = v ?? 1),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, r),
+                  child: const Text("OK"),
+                ),
+              ],
+            );
+          },
         );
       },
     );
 
-    // Validaciones idénticas a tu C++
-    if (newFloor > 6) {
-      addLog("Ese nivel no existe");
-      return;
-    }
-    if (rango == 1 && newFloor > 2) {
-      addLog("No tiene acceso a ese nivel");
-      return;
-    }
-    if (rango == 2 && newFloor > 4) {
-      addLog("No tiene acceso a ese nivel");
-      return;
-    }
-
-    addLog("Elevador $elev yendo al piso $newFloor...");
+    return result ?? 1;
   }
 
-  // ====== Solicitar elevador (fase2) ======
-  Future<void> callElevator() async {
-    addLog("Llamando elevador al piso $userFloor");
-
-    await Future.wait([
-      papu(userFloor),
-      papu2(userFloor),
-    ]);
-  }
+  // =======================================================
+  // =========================== UI ========================
+  // =======================================================
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("Control de Elevadores")),
+      appBar: AppBar(title: const Text("Elevadores con Threads Reales")),
       body: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(18),
         child: Column(
           children: [
-            Text("Elevador 1: piso $elevator1"),
-            Text("Elevador 2: piso $elevator2"),
+            Text("Elevador 1: piso $elev1"),
+            Text("Elevador 2: piso $elev2"),
             const SizedBox(height: 20),
 
             TextField(
-              decoration: const InputDecoration(labelText: "¿En qué piso estás?"),
-              keyboardType: TextInputType.number,
-              onChanged: (v) => userFloor = int.tryParse(v) ?? 0,
-            ),
-            ElevatedButton(
-              onPressed: callElevator,
-              child: const Text("Pedir elevador"),
-            ),
+  decoration: const InputDecoration(
+    labelText: "¿En qué piso estás?",
+  ),
+  keyboardType: TextInputType.number,
+  onChanged: (v) {
+    setState(() {
+      final n = int.tryParse(v);
+
+      if (n == null) {
+        userFloor = 0; // inválido
+        return;
+      }
+
+      if (n > 6) {
+        logMsg("Este piso no existe");
+        userFloor = 0; // marca como inválido
+        return;
+      }
+
+      userFloor = n; // válido
+    });
+  },
+),
+
+ElevatedButton(
+  onPressed: (userFloor == 0)
+      ? null
+      : llamarElevadores,
+  child: const Text("Pedir elevadores"),
+),
 
             const SizedBox(height: 20),
-            const Text("Log:", style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text("Log:"),
             Expanded(
               child: SingleChildScrollView(
                 child: Text(log),
