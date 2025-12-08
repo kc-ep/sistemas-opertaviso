@@ -21,6 +21,8 @@ class ElevadorApp extends StatelessWidget {
 }
 
 class ElevadorScreen extends StatefulWidget {
+  const ElevadorScreen({super.key});
+
   @override
   State<ElevadorScreen> createState() => _ElevadorScreenState();
 }
